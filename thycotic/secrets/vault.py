@@ -15,6 +15,10 @@ import requests
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from requests_aws4auth import AWS4Auth
+from base64 import b64encode
+
+import boto3
 
 
 @dataclass
@@ -43,8 +47,8 @@ class VaultSecret:
         return [
             (
                 re.compile("([a-z0-9])([A-Z])")
-                .sub(r"\1_\2", re.compile(r"(.)([A-Z][a-z]+)").sub(r"\1_\2", k))
-                .lower(),
+                    .sub(r"\1_\2", re.compile(r"(.)([A-Z][a-z]+)").sub(r"\1_\2", k))
+                    .lower(),
                 v,
             )
             for (k, v) in camel_cased.items()
@@ -89,6 +93,7 @@ class SecretsVault:
 
     DEFAULT_TLD = "com"
     DEFAULT_URL_TEMPLATE = "https://{}.secretsvaultcloud.{}/v1"
+    DEFAULT_GRANT_TYPE = "client_credentials"
     SECRET_PATH_URI = "secrets"
     TOKEN_PATH_URI = "token"
 
@@ -114,19 +119,48 @@ class SecretsVault:
         raise SecretsVaultError(response)
 
     @classmethod
-    def _get_access_grant(cls, token_url, client_id, client_secret):
+    def _get_access_grant(cls, token_url, client_id, client_secret, grant_type):
         """Gets an Access Grant by calling the DSV REST API ``token`` endpoint
 
         :raise :class:`SecretsVaultError` when the server returns anything other
                than a valid Access Grant"""
+        if grant_type == "aws_iam":
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            if session.region_name is None:
+                raise SecretsVaultError("default aws region is not set")
+
+            body = "Action=GetCallerIdentity&Version=2011-06-15"
+            aws_auth = AWS4Auth(credentials.access_key, credentials.secret_key, session.region_name, "sts",
+                                session_token=credentials.token)
+
+            pre_request = requests.Request(
+                method="POST",
+                url="https://sts.amazonaws.com",
+                headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                         "Host": "sts.amazonaws.com"},
+                data=body,
+                auth=aws_auth,
+            )
+
+            request = pre_request.prepare()
+            headers = json.dumps({k: [request.headers[k]] for k in request.headers})
+
+            auth_params = {
+                'grant_type': grant_type,
+                'aws_headers': b64encode(headers.encode('utf-8')).decode('utf-8'),
+                'aws_body': b64encode(body.encode('utf-8')).decode('utf-8'),
+            }
+        elif grant_type == "client_credentials":
+            auth_params = {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": grant_type,
+            }
 
         response = requests.post(
             token_url,
-            json={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "grant_type": "client_credentials",
-            },
+            json=auth_params
         )
 
         try:
@@ -135,12 +169,13 @@ class SecretsVault:
             raise SecretsVaultError(response)
 
     def __init__(
-        self,
-        tenant,
-        client_id,
-        client_secret,
-        tld=DEFAULT_TLD,
-        url_template=DEFAULT_URL_TEMPLATE,
+            self,
+            tenant,
+            client_id,
+            client_secret,
+            grant_type=DEFAULT_GRANT_TYPE,
+            tld=DEFAULT_TLD,
+            url_template=DEFAULT_URL_TEMPLATE,
     ):
         """
         :param tenant: The DSV tenant i.e. `tenant`.secretsvaultcloud.`tld`
@@ -149,6 +184,8 @@ class SecretsVault:
         :type client_id: str
         :param client_secret: The secret corresponding to `client_id`
         :type client_secret: str
+        :param grant_type: The DSV authentication type i.e. `client_credentials` or `aws_iam`
+        :type grant_type: str
         :param tld: The top-level domain e.g. "com" or "eu" (see `tenant`)
         :type tld: str
         :param url_template: The template to format with `tenant` and `tld`
@@ -159,6 +196,7 @@ class SecretsVault:
         self.client_secret = client_secret
         self.token_url = f"{self.base_url}/{self.TOKEN_PATH_URI.lstrip('/')}"
         self.secret_url = f"{self.base_url}/{self.SECRET_PATH_URI.lstrip('/')}"
+        self.grant_type = grant_type
 
     def _refresh_access_grant(self, seconds_of_drift=300):
         """Refreshes the Access Grant if it has expired or will in the next
@@ -168,15 +206,15 @@ class SecretsVault:
                than a valid Access Grant"""
 
         if (
-            hasattr(self, "access_grant")
-            and self.access_grant_refreshed
-            + timedelta(seconds=self.access_grant["expires_in"] + seconds_of_drift)
-            > datetime.now()
+                hasattr(self, "access_grant")
+                and self.access_grant_refreshed
+                + timedelta(seconds=self.access_grant["expires_in"] + seconds_of_drift)
+                > datetime.now()
         ):
             return
         else:
             self.access_grant = self._get_access_grant(
-                self.token_url, self.client_id, self.client_secret
+                self.token_url, self.client_id, self.client_secret, self.grant_type
             )
             self.access_grant_refreshed = datetime.now()
 
