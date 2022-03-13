@@ -30,6 +30,6 @@ jobs:
           DSV_CLIENT_ID: ${{ secrets.DSV_CLIENT_ID }}
           DSV_CLIENT_SECRET: ${{ secrets.DSV_CLIENT_SECRET }}
           DSV_BASE_URL: ${{ secrets.DSV_BASE_URL }}
-          DSV_BASE_URL: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          DSV_BASE_URL: ${{ secrets.AWS_DEFAULT_REGION }}
-          DSV_BASE_URL: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
