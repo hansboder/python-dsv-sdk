@@ -47,3 +47,15 @@ def aws_implicit_authorizer(env_vars):
 @pytest.fixture()
 def vault(authorizer, env_vars):
     return SecretsVault(env_vars["base_url"], authorizer)
+
+@pytest.fixture(autouse=True)
+def require_env_var(request, env_vars):
+    if request.node.get_closest_marker("require_env_var"):
+        variable_name = request.node.get_closest_marker("require_env_var").args[0]
+        if variable_name not in env_vars:
+            pytest.skip(f"skipping test due to missing env_var {variable_name}")             
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "require_env_var(variable_name): skip test for the given search engine",
+    )
