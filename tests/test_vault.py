@@ -35,3 +35,17 @@ def test_access_token_authorizer(authorizer, env_vars):
     token = authorizer.get_access_token()
     vault = SecretsVault(env_vars["base_url"], AccessTokenAuthorizer(token))
     assert len(VaultSecret(**vault.get_secret("test/sdk/simple")).id) == 36
+
+@pytest.mark.require_env_var('access_key')
+def test_aws_access_token_authorizer(aws_authorizer, env_vars):
+    """Tests that aws credentials can be used to retrieve a secret"""
+    token = aws_authorizer.get_access_token()
+    vault = SecretsVault(env_vars["base_url"], AccessTokenAuthorizer(token))
+    assert len(VaultSecret(**vault.get_secret("test/sdk/simple")).id) == 36
+
+@pytest.mark.require_env_var('access_key')
+def test_aws_implict_access_token_authorizer(aws_implicit_authorizer, env_vars):
+    """Tests that environmental aws credentials can be used to retrieve a secret"""
+    token = aws_implicit_authorizer.get_access_token()
+    vault = SecretsVault(env_vars["base_url"], AccessTokenAuthorizer(token))
+    assert len(VaultSecret(**vault.get_secret("test/sdk/simple")).id) == 36
