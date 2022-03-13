@@ -52,7 +52,7 @@ def vault(authorizer, env_vars):
 def require_env_var(request, env_vars):
     if request.node.get_closest_marker("require_env_var"):
         variable_name = request.node.get_closest_marker("require_env_var").args[0]
-        if variable_name not in env_vars or env_vars[variable_name] is None:
+        if variable_name not in env_vars or env_vars[variable_name] is None or env_vars[variable_name] == "":
             pytest.skip(f"skipping test due to missing env_var {variable_name}")             
 
 def pytest_configure(config):
