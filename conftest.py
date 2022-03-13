@@ -57,5 +57,5 @@ def require_env_var(request, env_vars):
 
 def pytest_configure(config):
     config.addinivalue_line(
-        "markers", "require_env_var(variable_name): skip test for the given search engine",
+        "markers", "require_env_var(variable_name): skip test if missing environment variable",
     )
