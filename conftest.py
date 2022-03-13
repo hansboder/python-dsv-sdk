@@ -38,6 +38,11 @@ def aws_authorizer(env_vars):
         session_token=env_vars["session_token"]
     )
 
+@pytest.fixture
+def aws_implicit_authorizer(env_vars):
+    return AWSGrantAuthorizer(
+        env_vars["base_url"],
+    )
 
 @pytest.fixture()
 def vault(authorizer, env_vars):

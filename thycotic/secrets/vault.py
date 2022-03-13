@@ -16,6 +16,7 @@ import requests
 import hashlib
 import base64
 import hmac
+import boto3
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -186,19 +187,21 @@ class PasswordGrantAuthorizer(Authorizer):
 
 
 class AWSGrantAuthorizer(Authorizer):
-    """Allows the use of an AWS profile to authorize REST 
-    API calls.
+    """Allows the use of an AWS profile to authorize REST API calls.
     """
 
     @staticmethod
     def _get_access_grant(token_url, access_key, secret_key, session_token, region):
-        """Gets an Access Grant by calling the DSV REST API ``token`` endpoint using AWS credentials.
+        """Gets an Access Grant by calling the DSV REST API ``token`` endpoint 
+        using AWS credentials.
         See https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
 
         :raise :class:`SecretsVaultError` when the server returns anything other
                than a valid Access Grant"""
 
+        region = "us-east-1" if region is None else region
         endpoint = 'sts.amazonaws.com'
+
         if region != "us-east-1":
             endpoint = f"sts.{region}.amazonaws.com"
 
@@ -237,17 +240,14 @@ class AWSGrantAuthorizer(Authorizer):
 
         # calculate signature
         key = f"AWS4{secret_key}".encode('utf-8')
-        date_key = hmac.new(key, date_stamp.encode(
-            'utf-8'), hashlib.sha256).digest()
-        region_key = hmac.new(date_key, region.encode(
-            'utf-8'), hashlib.sha256).digest()
-        service_key = hmac.new(region_key, 'sts'.encode(
-            'utf-8'), hashlib.sha256).digest()
-        signing_key = hmac.new(service_key, 'aws4_request'.encode(
-            'utf-8'), hashlib.sha256).digest()
-        signature = hmac.new(signing_key, string_to_sign.encode(
+        for message in [date_stamp, region, "sts", "aws4_request"]:
+            key = hmac.new(key, message.encode(
+                'utf-8'), hashlib.sha256).digest()
+
+        signature = hmac.new(key, string_to_sign.encode(
             'utf-8'), hashlib.sha256).hexdigest()
 
+        # create sts authorization header and normalize
         authorization_header = f"{algorithm} Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
         request.headers['Authorization'] = authorization_header
         headers = json.dumps({h: [request.headers[h]]
@@ -267,6 +267,43 @@ class AWSGrantAuthorizer(Authorizer):
         except json.JSONDecodeError:
             raise SecretsVaultError(response)
 
+    def _refresh_access_grant(self, seconds_of_drift=300):
+        """Refreshes the Access Grant if it has expired or will in the next
+        `seconds_of_drift` seconds.
+
+        Use boto3 session credential provider to get refreshed AWS credentials
+        if no explicit access key and secret key are set as the instance credentials
+        will have changed since the previous authentication attempt
+
+        :raise :class:`SecretsVaultError` when the server returns anything other
+               than a valid Access Grant"""
+
+        if (
+            hasattr(self, "access_grant")
+            and self.access_grant_refreshed
+            + timedelta(seconds=self.access_grant["expiresIn"] + seconds_of_drift)
+            > datetime.now()
+        ):
+            return
+        else:
+            access_key = self.access_key
+            secret_key = self.secret_key
+            session_token = self.session_token
+            region = self.region
+
+            if (self.access_key is None and self.secret_key is None):
+                session = boto3.Session()
+                credentials = session.get_credentials().get_frozen_credentials()
+                access_key = credentials.access_key
+                secret_key = credentials.secret_key
+                session_token = credentials.token
+                region = session.region_name
+
+            self.access_grant = self._get_access_grant(
+                self.token_url, access_key, secret_key, session_token, region
+            )
+            self.access_grant_refreshed = datetime.now()
+
     def __init__(self, base_url, access_key=None, secret_key=None, session_token=None, region="us-east-1", token_path_uri="/v1/token"):
         self.base_url = base_url
         self.access_key = access_key
@@ -277,9 +314,8 @@ class AWSGrantAuthorizer(Authorizer):
             "/") + "/" + token_path_uri.lstrip("/")
 
     def get_access_token(self):
-        return self._get_access_grant(
-            self.token_url, self.access_key, self.secret_key, self.session_token, self.region
-        )["accessToken"]
+        self._refresh_access_grant()
+        return self.access_grant["accessToken"]
 
 
 class SecretsVault:
@@ -321,7 +357,7 @@ class SecretsVault:
         """
         :param base_url: The DSV URL i.e. mytenant.secretsvaultcloud.com
         :type base_url: str
-        :param authorizer: The Authorizer class used to authenticate to the DSV 
+        :param authorizer: The Authorizer class used to authenticate to the DSV
             REST API
         :type authorizer: Authorizer class
         """
