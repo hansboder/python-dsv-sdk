@@ -13,6 +13,9 @@ from abc import ABC, abstractmethod
 import json
 import re
 import requests
+import hashlib
+import base64
+import hmac
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -169,7 +172,8 @@ class PasswordGrantAuthorizer(Authorizer):
         self.base_url = base_url
         self.client_id = client_id
         self.client_secret = client_secret
-        self.token_url = base_url.rstrip("/") + "/" + token_path_uri.lstrip("/")
+        self.token_url = base_url.rstrip(
+            "/") + "/" + token_path_uri.lstrip("/")
         self.grant_request = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -179,6 +183,103 @@ class PasswordGrantAuthorizer(Authorizer):
     def get_access_token(self):
         self._refresh_access_grant()
         return self.access_grant["accessToken"]
+
+
+class AWSGrantAuthorizer(Authorizer):
+    """Allows the use of an AWS profile to authorize REST 
+    API calls.
+    """
+
+    @staticmethod
+    def _get_access_grant(token_url, access_key, secret_key, session_token, region):
+        """Gets an Access Grant by calling the DSV REST API ``token`` endpoint using AWS credentials.
+        See https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
+
+        :raise :class:`SecretsVaultError` when the server returns anything other
+               than a valid Access Grant"""
+
+        endpoint = 'sts.amazonaws.com'
+        if region != "us-east-1":
+            endpoint = f"sts.{region}.amazonaws.com"
+
+        datetime_now = datetime.utcnow()
+        amz_date = datetime_now.strftime('%Y%m%dT%H%M%SZ')
+        date_stamp = datetime_now.strftime('%Y%m%d')
+
+        pre_request = requests.Request(
+            method='POST',
+            url=f"https://{endpoint}",
+            headers={"Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+                     "Host": endpoint, "X-Amz-Date": amz_date},
+            data='Action=GetCallerIdentity&Version=2011-06-15',
+        )
+
+        if session_token:
+            pre_request.headers["X-Amz-Security-Token"] = session_token
+
+        request = pre_request.prepare()
+
+        # create canonical request
+        canonical_uri = "/"
+        canonical_querystring = ""
+        canonical_headers = "".join(
+            f"{h.lower()}:{request.headers[h]}\n" for h in sorted(request.headers))
+        payload_hash = hashlib.sha256(request.body.encode('utf-8')).hexdigest()
+        signed_headers = ';'.join(h.lower() for h in sorted(request.headers))
+        canonical_request = f"{request.method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+
+        # create string to sign
+        algorithm = 'AWS4-HMAC-SHA256'
+        credential_scope = f"{date_stamp}/{region}/sts/aws4_request"
+        request_hash = hashlib.sha256(
+            canonical_request.encode('utf-8')).hexdigest()
+        string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{request_hash}"
+
+        # calculate signature
+        key = f"AWS4{secret_key}".encode('utf-8')
+        date_key = hmac.new(key, date_stamp.encode(
+            'utf-8'), hashlib.sha256).digest()
+        region_key = hmac.new(date_key, region.encode(
+            'utf-8'), hashlib.sha256).digest()
+        service_key = hmac.new(region_key, 'sts'.encode(
+            'utf-8'), hashlib.sha256).digest()
+        signing_key = hmac.new(service_key, 'aws4_request'.encode(
+            'utf-8'), hashlib.sha256).digest()
+        signature = hmac.new(signing_key, string_to_sign.encode(
+            'utf-8'), hashlib.sha256).hexdigest()
+
+        authorization_header = f"{algorithm} Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+        request.headers['Authorization'] = authorization_header
+        headers = json.dumps({h: [request.headers[h]]
+                             for h in request.headers})
+
+        response = requests.post(
+            token_url,
+            json={
+                "aws_headers": base64.b64encode(headers.encode('utf-8')).decode('utf-8'),
+                "aws_body":  base64.b64encode(request.body.encode('utf-8')).decode('utf-8'),
+                "grant_type": "aws_iam",
+            },
+        )
+
+        try:
+            return json.loads(SecretsVault.process(response).content)
+        except json.JSONDecodeError:
+            raise SecretsVaultError(response)
+
+    def __init__(self, base_url, access_key=None, secret_key=None, session_token=None, region="us-east-1", token_path_uri="/v1/token"):
+        self.base_url = base_url
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.session_token = session_token
+        self.region = region
+        self.token_url = base_url.rstrip(
+            "/") + "/" + token_path_uri.lstrip("/")
+
+    def get_access_token(self):
+        return self._get_access_grant(
+            self.token_url, self.access_key, self.secret_key, self.session_token, self.region
+        )["accessToken"]
 
 
 class SecretsVault:

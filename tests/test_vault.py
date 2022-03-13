@@ -35,3 +35,9 @@ def test_access_token_authorizer(authorizer, env_vars):
     token = authorizer.get_access_token()
     vault = SecretsVault(env_vars["base_url"], AccessTokenAuthorizer(token))
     assert len(VaultSecret(**vault.get_secret("test/sdk/simple")).id) == 36
+
+def test_aws_access_token_authorizer(aws_authorizer, env_vars):
+    """Tests that an existing access token can be used to retrieve a secret"""
+    token = aws_authorizer.get_access_token()
+    vault = SecretsVault(env_vars["base_url"], AccessTokenAuthorizer(token))
+    assert len(VaultSecret(**vault.get_secret("test/sdk/simple")).id) == 36
